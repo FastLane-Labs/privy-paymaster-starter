@@ -19,7 +19,8 @@ export default function DashboardPage() {
 
   const onSendTransaction = async () => {
     if (!smartWalletClient) return;
-    const to = "0x6c216357a2A5C827dE785f67492d9F90763471B8";
+    const to = "0x0000000000000000000000000000000000000000";//SOME ADDRESS
+    
     const userOpHash = await smartWalletClient.sendUserOperation({
       account: smartWalletClient.account,
       calls: [
@@ -30,7 +31,7 @@ export default function DashboardPage() {
       ],
       paymasterContext: {
         mode: "sponsor",
-        address: sponsorAccount?.address,
+        address: sponsorAccount?.address
       },
     });
     console.log("User Operation Hash:", userOpHash);
