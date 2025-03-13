@@ -24,7 +24,7 @@ Before you begin, make sure you have a [Privy account](https://privy.io), have c
 1. Clone this repository and open it in your terminal.
 
 ```sh
-git clone https://github.com/FastLane-Labs/smart-wallets-starter
+git clone https://github.com/FastLane-Labs/privy-paymaster-starter.git
 ```
 
 2. Install the necessary dependencies (including [Privy Auth](https://www.npmjs.com/package/@privy-io/react-auth)) with `npm`.
