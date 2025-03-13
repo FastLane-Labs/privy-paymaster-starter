@@ -3,11 +3,7 @@ import { useSmartWallets } from "@privy-io/react-auth/smart-wallets";
 import Head from "next/head";
 import { useRouter } from "next/router";
 import { useEffect } from "react";
-import { encodeFunctionData, erc721Abi } from "viem";
-import { mintAbi } from "../components/lib/abis/mint";
-
-const NFT_CONTRACT_ADDRESS =
-  "0x3331AfB9805ccF5d6cb1657a8deD0677884604A7" as const;
+import { sponsorAccount } from "./api/paymaster";
 
 export default function DashboardPage() {
   const router = useRouter();
@@ -21,56 +17,28 @@ export default function DashboardPage() {
     }
   }, [ready, authenticated, router]);
 
-  const onMint = () => {
+  const onSendTransaction = async () => {
     if (!smartWalletClient) return;
-
-    smartWalletClient.sendTransaction({
-      to: NFT_CONTRACT_ADDRESS,
-      data: encodeFunctionData({
-        abi: mintAbi,
-        functionName: "mint",
-        args: [smartWalletClient.account.address],
-      }),
-    });
-  };
-
-  const onSetApprovalForAll = () => {
-    if (!smartWalletClient) return;
-
-    smartWalletClient.sendTransaction({
-      to: NFT_CONTRACT_ADDRESS,
-      data: encodeFunctionData({
-        abi: erc721Abi,
-        functionName: "setApprovalForAll",
-        args: [smartWalletClient.account.address, true],
-      }),
-    });
-  };
-
-  const onBatchTransaction = () => {
-    if (!smartWalletClient) return;
-
-    smartWalletClient.sendTransaction({
+    const to = "0x6c216357a2A5C827dE785f67492d9F90763471B8";
+    const userOpHash = await smartWalletClient.sendUserOperation({
       account: smartWalletClient.account,
       calls: [
         {
-          to: NFT_CONTRACT_ADDRESS,
-          data: encodeFunctionData({
-            abi: mintAbi,
-            functionName: "mint",
-            args: [smartWalletClient.account.address],
-          }),
-        },
-        {
-          to: NFT_CONTRACT_ADDRESS,
-          data: encodeFunctionData({
-            abi: erc721Abi,
-            functionName: "setApprovalForAll",
-            args: [smartWalletClient.account.address, true],
-          }),
+          to,
+          value: 1000000000000000n,
         },
       ],
+      paymasterContext: {
+        mode: "sponsor",
+        address: sponsorAccount?.address,
+      },
     });
+    console.log("User Operation Hash:", userOpHash);
+
+    const userOpReceipt = await smartWalletClient.waitForUserOperationReceipt({
+      hash: userOpHash,
+    });
+    console.log("User Operation Receipt:", userOpReceipt);
   };
 
   return (
@@ -93,24 +61,12 @@ export default function DashboardPage() {
                 Logout
               </button>
             </div>
-            <div className="mt-12 flex gap-4 flex-wrap">
+            <div className="mt-12 flex gap-4 flex-wrap"> 
               <button
-                onClick={onMint}
+                onClick={onSendTransaction}
                 className="text-sm bg-violet-600 hover:bg-violet-700 py-2 px-4 rounded-md text-white border-none"
               >
-                Mint NFT
-              </button>
-              <button
-                onClick={onSetApprovalForAll}
-                className="text-sm bg-violet-600 hover:bg-violet-700 py-2 px-4 rounded-md text-white border-none"
-              >
-                Approve
-              </button>
-              <button
-                onClick={onBatchTransaction}
-                className="text-sm bg-violet-600 hover:bg-violet-700 py-2 px-4 rounded-md text-white border-none"
-              >
-                Batch Transaction
+                Send Transaction
               </button>
             </div>
 

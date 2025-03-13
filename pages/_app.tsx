@@ -3,7 +3,7 @@ import type { AppProps } from "next/app";
 import Head from "next/head";
 import { PrivyProvider } from "@privy-io/react-auth";
 import { SmartWalletsProvider } from "@privy-io/react-auth/smart-wallets";
-import { baseSepolia } from "viem/chains";
+import { monadTestnet } from "viem/chains";
 
 function MyApp({ Component, pageProps }: AppProps) {
   return (
@@ -45,14 +45,21 @@ function MyApp({ Component, pageProps }: AppProps) {
       <PrivyProvider
         appId={process.env.NEXT_PUBLIC_PRIVY_APP_ID || ""}
         config={{
-          defaultChain: baseSepolia,
-          supportedChains: [baseSepolia],
+          defaultChain: monadTestnet,
+          supportedChains: [monadTestnet],
           embeddedWallets: {
             createOnLogin: "all-users",
           },
         }}
       >
-        <SmartWalletsProvider>
+        <SmartWalletsProvider
+          config={{
+            paymasterContext: {
+              mode: "sponsor",
+              address: "0x6c216357a2A5C827dE785f67492d9F90763471B8",
+            },
+          }}
+        >
           <Component {...pageProps} />
         </SmartWalletsProvider>
       </PrivyProvider>
