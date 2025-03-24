@@ -3,7 +3,10 @@ import { useSmartWallets } from "@privy-io/react-auth/smart-wallets";
 import Head from "next/head";
 import { useRouter } from "next/router";
 import { useEffect } from "react";
-import { sponsorAccount } from "./api/paymaster";
+import { shBundler, sponsorClient, userClient } from "../lib/fastlane/user";
+import { toPackedUserOperation } from "viem/account-abstraction";
+import { getSignature } from "../lib/api/getSignature";
+import { PAYMASTER_ADDRESS, CHAIN_ID } from "../lib/fastlane/constants";
 
 export default function DashboardPage() {
   const router = useRouter();
@@ -18,25 +21,54 @@ export default function DashboardPage() {
   }, [ready, authenticated, router]);
 
   const onSendTransaction = async () => {
-    if (!smartWalletClient) return;
-    const to = "0x0000000000000000000000000000000000000000";//SOME ADDRESS
-    
-    const userOpHash = await smartWalletClient.sendUserOperation({
+    if(!smartWalletClient) return;
+    const calls = [
+      {
+        to: userClient.account!.address,
+        value: 1000000000000000n,
+      },
+    ];
+    const userOp = await smartWalletClient.prepareUserOperation({
       account: smartWalletClient.account,
-      calls: [
-        {
-          to,
-          value: 1000000000000000n,
-        },
-      ],
+      calls,
+    });
+
+    const packedUserOp = toPackedUserOperation(userOp);
+    
+    // BACKEND SERVICE: START
+    const currentTime = BigInt(Math.floor(Date.now() / 1000));
+    const validUntil = currentTime + 3600n;
+    const validAfter = 0n;
+
+    const sponsorSignature = await getSignature(
+      packedUserOp, 
+      Number(validUntil), 
+      Number(validAfter), 
+      PAYMASTER_ADDRESS, 
+      CHAIN_ID
+    );
+    // BACKEND SERVICE: END
+    
+    const userOpHash = await shBundler.sendUserOperation({
+      account: smartWalletClient.account,
+      calls,
+      // MUST HAVE SAME NONCE AS PREPARED USER OPERATION
+      nonce: userOp.nonce,
+      callGasLimit: userOp.callGasLimit,
+      verificationGasLimit: userOp.verificationGasLimit,
+      preVerificationGas: userOp.preVerificationGas,
+      maxFeePerGas: userOp.maxFeePerGas,
+      maxPriorityFeePerGas: userOp.maxPriorityFeePerGas,
       paymasterContext: {
         mode: "sponsor",
-        address: sponsorAccount?.address
-      },
+        sponsor: sponsorClient.account!.address,
+        sponsorSignature,
+        validUntil: validUntil.toString(),
+        validAfter: validAfter.toString()
+      }
     });
-    console.log("User Operation Hash:", userOpHash);
-
-    const userOpReceipt = await smartWalletClient.waitForUserOperationReceipt({
+    
+    const userOpReceipt = await shBundler.waitForUserOperationReceipt({
       hash: userOpHash,
     });
     console.log("User Operation Receipt:", userOpReceipt);

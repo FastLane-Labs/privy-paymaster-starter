@@ -1,213 +1,7 @@
 import { NextApiRequest, NextApiResponse } from 'next';
-import { toPackedUserOperation, UserOperation } from 'viem/account-abstraction';
-import { createWalletClient, http, type Hex, type Address, createPublicClient, Client } from 'viem';
-import { privateKeyToAccount } from 'viem/accounts';
-import paymasterAbi from './abi/paymaster.json';
-import addressHubAbi from './abi/addresshub.json';
-import shmonadAbi from './abi/shmonad.json';
-import { monadTestnet } from 'viem/chains';
-// Use a backend-specific RPC URL (not prefixed with NEXT_PUBLIC_)
-const BACKEND_RPC_URL = process.env.NEXT_PUBLIC_RPC_URL;
-const ADDRESS_HUB = process.env.NEXT_PUBLIC_ADDRESS_HUB as Hex;
-const SPONSOR_WALLET_PRIVATE_KEY = process.env.NEXT_PUBLIC_SPONSOR_WALLET_PRIVATE_KEY as Hex;
-
-const MIN_BONDED_BALANCE = 100000000000000000n;
-
-// Create backend-specific public client
-const backendPublicClient = createPublicClient({
-  chain: monadTestnet,
-  transport: http(BACKEND_RPC_URL)
-});
-
-// Create a sponsor wallet client using the private key
-if (!SPONSOR_WALLET_PRIVATE_KEY) {
-  console.error('SPONSOR_WALLET_PRIVATE_KEY environment variable is not set');
-  console.error('This is required for the paymaster to work properly');
-}
-
-export const sponsorAccount = SPONSOR_WALLET_PRIVATE_KEY 
-  ? privateKeyToAccount(SPONSOR_WALLET_PRIVATE_KEY as Hex) 
-  : undefined;
-
-const sponsorWallet = sponsorAccount 
-  ? createWalletClient({
-      account: sponsorAccount,
-      chain: monadTestnet,
-      transport: http(BACKEND_RPC_URL)
-    })
-  : undefined;
-
-/**
- * Helper: Read paymaster address directly from the contract
- */
-async function getPaymasterAddress(): Promise<Address | null> {
-  if (!ADDRESS_HUB) {
-    console.error('ADDRESS_HUB is not defined. Please check your environment variables.');
-    return null;
-  }
-
-  try {
-    const paymasterAddress = await backendPublicClient.readContract({
-      address: ADDRESS_HUB,
-      abi: addressHubAbi,
-      functionName: 'paymaster4337',
-      args: []
-    }) as Address;
-    
-    if (!paymasterAddress || paymasterAddress === '0x0000000000000000000000000000000000000000') {
-      console.error('Invalid paymaster address read from contract');
-      return null;
-    }
-    
-    return paymasterAddress;
-  } catch (error) {
-    console.error('Error reading paymaster address:', error);
-    return null;
-  }
-}
-
-async function getBondedBalance(smartAccountAddress: Address): Promise<bigint> {
-    const paymasterAddress = await getPaymasterAddress();
-    if (!paymasterAddress) {
-        throw new Error("Failed to get paymaster address");
-    }
-
-    const policyId = (await backendPublicClient.readContract({
-        address: paymasterAddress,
-        abi: paymasterAbi,
-        functionName: 'POLICY_ID',
-        args: []
-      })) as bigint;
-
-    const shMonadAddress = await backendPublicClient.readContract({
-        address: ADDRESS_HUB,
-        abi: addressHubAbi,
-        functionName: 'shMonad',
-        args: []
-    }) as Address;
-    
-    return await backendPublicClient.readContract({
-        address: shMonadAddress,
-        abi: shmonadAbi,
-        functionName: 'balanceOfBonded',
-        args: [policyId, smartAccountAddress]
-    }) as bigint;
-}
-
-/**
- * Helper: Generate and sign paymaster data for a user operation
- */
-async function signUserOperationWithSponsor(
-  userOperation: UserOperation,
-  validUntil: bigint,
-  validAfter: bigint
-): Promise<{ 
-  signature: Hex, 
-  paymasterAddress: Address,
-  paymasterData: Hex
-} | null> {
-  try {
-    // Get paymaster address
-    const paymasterAddress = await getPaymasterAddress();
-    if (!paymasterAddress) {
-      console.error('No paymaster address available for signing');
-      return null;
-    }
-    
-    // Validate sponsor wallet
-    if (!sponsorWallet || !sponsorAccount) {
-      console.error('No sponsor wallet available');
-      return null;
-    }
-    
-    // Get hash to sign directly from the contract
-    const hash = await backendPublicClient.readContract({
-      address: paymasterAddress,
-      abi: paymasterAbi,
-      functionName: 'getHash',
-      args: [
-        toPackedUserOperation(userOperation),
-        validUntil,
-        validAfter
-      ]
-    }) as Hex;
-    
-    if (!hash) {
-      throw new Error(`Invalid hash returned from paymaster contract ${paymasterAddress}`);
-    }
-    
-    // Sign hash with sponsor wallet
-    const signature = await sponsorWallet.signMessage({
-      account: sponsorAccount,
-      message: { raw: hash },
-    });
-    
-    console.info('Generated signature for user operation', { 
-      sender: userOperation.sender,
-      signature: signature.substring(0, 10) + '...'
-    });
-
-    // Create paymaster data with the signature
-    const paymasterData = paymasterMode(
-      "sponsor",
-      validUntil,
-      validAfter,
-      signature as Hex,
-      sponsorWallet
-    ) as Hex;
-    
-    return { 
-      signature: signature as Hex, 
-      paymasterAddress,
-      paymasterData
-    };
-  } catch (error) {
-    console.error('Failed to sign user operation with sponsor:', error);
-    return null;
-  }
-}
-
-/**
- * Helper: Classify and format error for consistent response
- */
-function formatPaymasterError(error: any, id: any): any {
-  const errorMsg = error?.message || 'Unknown error';
-  
-  if (errorMsg.includes('insufficient') && errorMsg.includes('balance')) {
-    return {
-      jsonrpc: '2.0',
-      id,
-      error: { 
-        code: -32010, 
-        message: 'Paymaster has insufficient balance',
-        data: errorMsg
-      }
-    };
-  }
-  
-  if (errorMsg.includes('policy') || errorMsg.includes('limit')) {
-    return {
-      jsonrpc: '2.0',
-      id,
-      error: { 
-        code: -32011, 
-        message: 'Policy limit exceeded',
-        data: errorMsg
-      }
-    };
-  }
-  
-  // Default error
-  return {
-    jsonrpc: '2.0',
-    id,
-    error: { 
-      code: -32603, 
-      message: 'Paymaster internal error',
-      data: errorMsg
-    }
-  };
-}
+import { PackedUserOperation } from 'viem/account-abstraction';
+import { Address, Hex, keccak256, encodeAbiParameters, parseAbiParameters } from 'viem';
+import { sponsorClient } from '../../lib/fastlane/user';
 
 // Replace the handler function:
 // export default async function handler(req: NextApiRequest, res: NextApiResponse) {
@@ -228,14 +22,36 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         error: { code: -32600, message: 'Invalid request' }
       });
     }
-
+    
     // Handle different RPC methods
     switch (method) {
-      case 'pm_getPaymasterData':
-        return handleGetPaymasterData(req, res);
-      
-      case 'pm_getPaymasterStubData':
-        return handleGetPaymasterStubData(req, res);
+      case 'backend_getSignature':
+        const { userOp, validUntil, validAfter, paymasterAddress, chainId } = params;
+        // Convert validUntil and validAfter to BigInt
+        const validUntilBigInt = BigInt(validUntil);
+        const validAfterBigInt = BigInt(validAfter);
+
+        //chainId is a string, convert to bigint
+        const chainIdBigInt = BigInt(chainId);
+    
+        // convert userOp to PackedUserOperation
+        const packedUserOp = userOp as PackedUserOperation;
+        
+        try {
+          const signature = await handleGetSignature(packedUserOp, validUntilBigInt, validAfterBigInt, paymasterAddress as Address, chainIdBigInt);
+          return res.status(200).json({
+            jsonrpc: "2.0",
+            id,
+            result: signature
+          });
+        } catch (error) {
+          console.error("Signature error:", error);
+          return res.status(500).json({
+            jsonrpc: "2.0",
+            id,
+            error: { code: -32000, message: "Failed to generate signature", data: (error as Error).message }
+          });
+        }
       
       default:
         return res.status(400).json({
@@ -255,200 +71,68 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 }
 
 /**
- * Handle pm_getPaymasterData method
- */
-async function handleGetPaymasterData(req: NextApiRequest, res: NextApiResponse) {
-  const { id, params } = req.body;
-  
-  try {
-    // Extract parameters
-    const [userOperation, entryPointAddress, chainId, context] = params;
-    
-    // QUICK VALIDATION - must respond fast to avoid timeouts
-    if (!userOperation || !userOperation.sender || !entryPointAddress || !chainId || !context.mode || !context.address) {
-      return res.status(400).json({
-        jsonrpc: '2.0',
-        id,
-        error: { 
-          code: -32602, 
-          message: 'Invalid params',
-          data: 'Required parameters: userOperation, entryPointAddress, chainId, context' 
-        }
-      });
-    }
-    
-    if (context.mode === 'sponsor') {
-        return await handlePaymasterWithSponsor(userOperation, id, res, context.address)
-    } else if (context.mode === 'user') {
-        return await handlePaymasterWithoutSponsor(id, res, context.address) 
-    } else {
-        return res.status(400).json({
-            jsonrpc: '2.0',
-            id,
-            error: { code: -32602, message: 'Invalid context' }
-        });
-    }
-      
-    
-  } catch (error) {
-    console.error('Error in getPaymasterData:', error);
-    
-    // Format the error for consistent response
-    const errorResponse = formatPaymasterError(error, id);
-    return res.status(500).json(errorResponse);
-  }
+* Fetches a signature from the sponsor wallet for a user operation.
+* @param userOp The user operation to sign
+* @param validUntil The end timestamp of the user operation
+* @param validAfter The start timestamp of the user operation
+* @param paymasterAddress The address of the paymaster contract
+* @param chainId The chain ID
+*/
+export async function handleGetSignature(
+  userOp: PackedUserOperation, 
+  validUntil: bigint, 
+  validAfter: bigint, 
+  paymasterAddress: Address, 
+  chainId: bigint
+): Promise<Hex> {
+  const hash = await getHash(
+    userOp,
+    validUntil,
+    validAfter,
+    paymasterAddress,
+    chainId
+  )
+
+  // Sign hash with sponsor wallet
+  const sponsorSignature = await sponsorClient.signMessage({
+    account: sponsorClient.account!,
+    message: { raw: hash },
+  });
+
+  return sponsorSignature;
 }
 
 /**
- * Handle pm_getPaymasterStubData method
+ * Gets the hash of the user operation.
+ * @param userOp The user operation
+ * @param validUntil The end timestamp of the user operation
+ * @param validAfter The start timestamp of the user operation
+ * @param paymasterAddress The address of the paymaster contract
+ * @param chainId The chain ID
+ * @returns The hash of the user operation
  */
-async function handleGetPaymasterStubData(req: NextApiRequest, res: NextApiResponse) {
-  const { id, params } = req.body;
-  
-  try {
-    // Extract parameters
-    const [userOperation, entryPointAddress, chainId, context] = params;
-    
-    // Validate required parameters
-    if (!userOperation || !userOperation.sender || !entryPointAddress || !chainId || !context.mode || !context.address) {
-      return res.status(400).json({
-        jsonrpc: '2.0',
-        id,
-        error: { 
-          code: -32602, 
-          message: 'Invalid params',
-          data: 'Required parameters: userOperation, entryPointAddress, chainId, context' 
-        }
-      });
-    }
-
-    if (context.mode === 'sponsor') {
-        return await handlePaymasterWithSponsor(userOperation, id, res, context.address)
-        
-    } else if (context.mode === 'user') {
-        return await handlePaymasterWithoutSponsor(id, res, context.address)
-    } else {
-        return res.status(400).json({
-            jsonrpc: '2.0',
-            id,
-            error: { code: -32602, message: 'Invalid context' }
-        });
-    }
-  } catch (error) {
-    console.error('Error in getPaymasterStubData:', error);
-    
-    // Format the error for consistent response
-    const errorResponse = formatPaymasterError(error, id);
-    return res.status(500).json(errorResponse);
-  }
+function getHash(
+  userOp: PackedUserOperation,
+  validUntil: bigint,
+  validAfter: bigint,
+  paymasterAddress: Address,
+  chainId: bigint
+): Hex {
+  // Encode the parameters according to the Solidity abi.encode format
+  return keccak256(
+    encodeAbiParameters(
+      parseAbiParameters('address, uint256, bytes32, bytes32, bytes32, uint256, address, uint48, uint48'),
+      [
+        userOp.sender,
+        userOp.nonce,
+        keccak256(userOp.initCode || '0x'),
+        keccak256(userOp.callData),
+        userOp.gasFees,
+        chainId,
+        paymasterAddress,
+        Number(validUntil),
+        Number(validAfter)
+      ]
+    )
+  );
 }
-
-async function handlePaymasterWithSponsor(userOperation: UserOperation, id: any, res: NextApiResponse, payorAddress: Address) {
-    const bondedBalance = await getBondedBalance(payorAddress);
-    if (bondedBalance < MIN_BONDED_BALANCE) {
-        return res.status(400).json({
-            jsonrpc: '2.0',
-            id,
-            error: { code: -32602, message: 'Insufficient bonded balance. Visit shmonad.xyz to bond more MON.' }
-        });
-    }
-    // Set validity window (valid for 1 hour)
-    const currentTime = BigInt(Math.floor(Date.now() / 1000));
-    const validUntil = currentTime + BigInt(3600);
-    const validAfter = BigInt(0);
-    
-    // Generate and sign the paymaster data
-    const signResult = await signUserOperationWithSponsor(
-      userOperation as UserOperation, 
-      validUntil,
-      validAfter
-    );
-    
-    if (!signResult) {
-      return res.status(500).json({
-        jsonrpc: '2.0',
-        id,
-        error: { 
-          code: -32603, 
-          message: 'Failed to sign user operation',
-          data: 'Error generating paymaster signature'
-        }
-      });
-    }
-    
-    return res.status(200).json({
-        jsonrpc: '2.0',
-        id,
-        result: {
-          paymaster: signResult.paymasterAddress,
-          paymasterData: signResult.paymasterData,
-          paymasterVerificationGasLimit: '75000',
-          paymasterPostOpGasLimit: '120000',
-          sponsor: {
-            name: 'Fastlane Paymaster'
-          },
-          isFinal: true // This is the final data with real signature
-        }
-    });
-}
-
-async function handlePaymasterWithoutSponsor(id: any, res: NextApiResponse, payorAddress: Address) {
-    const bondedBalance = await getBondedBalance(payorAddress);
-    if (bondedBalance < MIN_BONDED_BALANCE) {
-        return res.status(400).json({
-            jsonrpc: '2.0',
-            id,
-            error: { code: -32602, message: 'Insufficient bonded balance. Visit shmonad.xyz to bond more MON.' }
-        });
-    }
-    return res.status(200).json({
-        jsonrpc: '2.0',
-        id,
-        result: {
-          paymaster: await getPaymasterAddress(),
-          paymasterData: paymasterMode('user'),
-          paymasterVerificationGasLimit: '75000',
-          paymasterPostOpGasLimit: '120000',
-          sponsor: {
-            name: 'Fastlane Paymaster'
-          },
-          isFinal: true // This is the final data with real signature
-        }
-    });
-}
-
-function paymasterMode(
-    mode: "user" | "sponsor",
-    validUntil?: bigint,
-    validAfter?: bigint,
-    sponsorSignature?: Hex,
-    userClient?: Client
-  ) {
-    if (mode === "user") {
-      return "0x00" as Hex;
-    } else {
-      if (userClient === undefined) {
-        throw new Error("userClient is undefined");
-      }
-      if (validUntil === undefined) {
-        throw new Error("validUntil is undefined");
-      }
-      if (validAfter === undefined) {
-        throw new Error("validAfter is undefined");
-      }
-      if (sponsorSignature === undefined) {
-        throw new Error("sponsorSignature is undefined");
-      }
-  
-      const accountAddress = userClient.account?.address;
-      if (!accountAddress) {
-        throw new Error("userClient.account is undefined");
-      }
-      return `0x01${accountAddress.slice(2)}${validUntil
-        .toString(16)
-        .padStart(12, "0")}${validAfter
-        .toString(16)
-        .padStart(12, "0")}${sponsorSignature.slice(2)}`;
-    }
-  }
-
