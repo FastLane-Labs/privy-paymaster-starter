@@ -15,7 +15,6 @@ Before you begin, make sure you have a [Privy account](https://privy.io), have c
    ID Number: 10143
    RPC URL: <MONAD RPC>
    Bundler URL: https://monad-testnet.4337-shbundler-fra.fastlane-labs.xyz
-   Paymaster URL: http://localhost:3000/api/paymaster
    ```
    
 
@@ -41,9 +40,13 @@ cp .env.example .env.local
 
 # Add your Privy App ID to .env.local
 NEXT_PUBLIC_PRIVY_APP_ID=<your-privy-app-id>
-NEXT_PUBLIC_RPC_URL=<MONAD-RPC>
+NEXT_PUBLIC_RPC_URL=<MONAD_RPC>
+NEXT_PUBLIC_SHBUNDLER_URL=https://monad-testnet.4337-shbundler-fra.fastlane-labs.xyz
+NEXT_PUBLIC_PAYMASTER_URL=https://monad-testnet.4337-shbundler-fra.fastlane-labs.xyz
 NEXT_PUBLIC_ADDRESS_HUB=0xC9f0cDE8316AbC5Efc8C3f5A6b571e815C021B51
-NEXT_PUBLIC_SPONSOR_WALLET_PRIVATE_KEY=<private-key-to-sponsor-eoa>
+NEXT_PUBLIC_PAYMASTER_ADDRESS=0x686bff22da7EeCff8d9606e81b1A8ce15Dd925b7
+NEXT_PUBLIC_SPONSOR_WALLET_PRIVATE_KEY=<SPONSOR_PRIVATE_KEY>
+NEXT_PUBLIC_PRIVATE_KEY=<USER_PRIVATE_KEY>
 ```
 4. Either the sponsor or user MUST stake and bond MON to the paymaster. You can do this on shmonad.xyz.
 
